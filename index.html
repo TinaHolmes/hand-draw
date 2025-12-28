@@ -247,7 +247,7 @@
         // ------------------ 绘图/擦除 (Pinch) ------------------
         if (isPinch(lm)) {
             // 坐标转换
-            const x = (1 - lm[8].x) * canvasElement.width;
+            const x = lm[8].x * canvasElement.width;
             const y = lm[8].y * canvasElement.height;
 
             // 逆向缩放坐标，以便存储在原始坐标系中
@@ -478,6 +478,7 @@ canvasCtx.restore(); // 恢复状态，不影响后续绘制
 </script>
 </body>
 </html>
+
 
 
 
