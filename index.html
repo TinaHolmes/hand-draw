@@ -343,53 +343,21 @@
         const bh = h * btn.h;
 
         // --- 核心修复：针对每个按钮开启独立的坐标变换 ---
-        canvasCtx.save(); 
-        // 将坐标原点移到按钮中心
-        canvasCtx.translate(bx + bw / 2, by + bh / 2);
-        // 水平翻转坐标系，抵消全局的 scaleX(-1)
-        canvasCtx.scale(-1, 1);
-        
-        // 现在所有绘制坐标都以按钮中心为 (0,0)
-        const halfW = bw / 2;
-        const halfH = bh / 2;
+        canvasCtx.save(); // 保存当前状态
 
-        // 绘制高亮选中状态
-        if (lastHoverBtn === btn) {
-            canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-            canvasCtx.fillRect(-halfW - 5, -halfH - 5, bw + 10, bh + 10);
-        }
+// 关键步：将坐标系平移到文字中心，并局部反转 X 轴
+canvasCtx.translate(bx + bw / 2, by + bh / 2);
+canvasCtx.scale(-1, 1); // 局部反转文字，抵消画布的整体镜像
 
-        // 当前激活的工具/颜色高亮
-        let isActive = false;
-        if (btn.id.includes(state.tool.toLowerCase())) isActive = true;
-        if (btn.color && btn.color === state.color) isActive = true;
-        if (btn.id === 'size_small' && state.lineWidth === 3) isActive = true;
-        if (btn.id === 'size_mid' && state.lineWidth === 8) isActive = true;
-        if (btn.id === 'size_large' && state.lineWidth === 15) isActive = true;
+canvasCtx.fillStyle = 'white';
+canvasCtx.font = '20px Arial';
+canvasCtx.textAlign = 'center';
+canvasCtx.textBaseline = 'middle';
 
-        if (isActive) {
-            canvasCtx.strokeStyle = '#00FF00';
-            canvasCtx.lineWidth = 4;
-            canvasCtx.strokeRect(-halfW, -halfH, bw, bh);
-        }
+// 注意：此时坐标已经平移，所以写字位置是 (0, 0)
+canvasCtx.fillText(btn.text, 0, 0); 
 
-        if (btn.type === 'color') {
-            canvasCtx.fillStyle = btn.color;
-            canvasCtx.fillRect(-halfW, -halfH, bw, bh);
-        } else {
-            canvasCtx.fillStyle = 'rgba(255,255,255,0.1)';
-            canvasCtx.fillRect(-halfW, -halfH, bw, bh);
-            canvasCtx.fillStyle = 'white';
-            canvasCtx.font = '20px Arial';
-            canvasCtx.textAlign = 'center';
-            canvasCtx.textBaseline = 'middle';
-            // 在 (0,0) 位置（即按钮中心）绘制文字
-            canvasCtx.fillText(btn.text, 0, 0);
-        }
-        
-        canvasCtx.restore(); // 恢复状态，处理下一个按钮
-    }
-}
+canvasCtx.restore(); // 恢复状态，不影响后续绘制
     function checkUISelection(indexTip) {
         // indexTip 是归一化坐标 0-1
         let hovered = null;
@@ -510,5 +478,6 @@
 </script>
 </body>
 </html>
+
 
 
