@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 隔空手势绘图系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #222; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        
+        /* 视频层：水平翻转以获得镜像体验 */
+        #input_video { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: none; }
+        
+        /* 画布层 */
+        #output_canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        
+        /* 加载提示 */
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 24px; text-align: center;
+            background: rgba(0,0,0,0.7); padding: 20px; border-radius: 10px; z-index: 100;
+        }
+
+        /* 简单的操作指南浮层 */
+        #guide {
+            position: absolute; bottom: 10px; left: 10px; color: rgba(255,255,255,0.8);
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; font-size: 14px;
+            pointer-events: none; z-index: 50;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <div id="loading">正在初始化 AI 模型和摄像头...<br>请稍候，且允许摄像头权限。</div>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+    
+    <div id="guide">
+        <b>手势说明：</b><br>
+        🖐️ 张开手掌：打开/关闭 菜单<br>
+        👆 食指悬停：选择菜单功能<br>
+        👌 拇指食指捏合：写字 / 使用橡皮<br>
+        ✌️ 剪刀手（食指+中指）：雪花消散清屏<br>
+        ☝️...☝️ 双手食指：缩放画布
+    </div>
+</div>
+
+<script>
+    // --- 1. 初始化变量 ---
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const loadingDiv = document.getElementById('loading');
+
+    // 状态管理
+    const state = {
+        isMenuOpen: false,
+        mode: 'IDLE', // IDLE, WRITING, ERASING, ZOOMING, DISSOLVING
+        menuCooldown: 0, // 防止菜单频繁闪烁
+        tool: 'PEN', // PEN, ERASER
+        color: '#00FF00',
+        lineWidth: 5,
+        scale: 1, // 缩放比例
+        baseScale: 1, // 缩放基准
+        zoomStartDist: 0 // 双手缩放起始距离
+    };
+
+    // 笔迹数据: Array of { points: [{x,y}], color, size, type }
+    let strokes = []; 
+    let currentStroke = null;
+
+    // 粒子系统 (用于雪花消散)
+    let particles = [];
+    let isDissolving = false;
+
+    // UI 配置
+    const uiConfig = {
+        x: 0.1, y: 0.1, width: 0.8, height: 0.8,
+        buttons: [
+            { id: 'tool_pen', text: '✏️ 笔', x: 0.15, y: 0.2, w: 0.2, h: 0.15, action: () => { state.tool = 'PEN'; } },
+            { id: 'tool_eraser', text: '🧽 橡皮', x: 0.4, y: 0.2, w: 0.2, h: 0.15, action: () => { state.tool = 'ERASER'; } },
+            // 颜色
+            { id: 'col_red', color: '#FF0000', x: 0.15, y: 0.4, w: 0.1, h: 0.1, type: 'color' },
+            { id: 'col_green', color: '#00FF00', x: 0.28, y: 0.4, w: 0.1, h: 0.1, type: 'color' },
+            { id: 'col_blue', color: '#0000FF', x: 0.41, y: 0.4, w: 0.1, h: 0.1, type: 'color' },
+            { id: 'col_yellow', color: '#FFFF00', x: 0.54, y: 0.4, w: 0.1, h: 0.1, type: 'color' },
+            // 大小
+            { id: 'size_small', text: '细', x: 0.15, y: 0.6, w: 0.1, h: 0.1, action: () => { state.lineWidth = 3; } },
+            { id: 'size_mid', text: '中', x: 0.28, y: 0.6, w: 0.1, h: 0.1, action: () => { state.lineWidth = 8; } },
+            { id: 'size_large', text: '粗', x: 0.41, y: 0.6, w: 0.1, h: 0.1, action: () => { state.lineWidth = 15; } },
+        ]
+    };
+    
+    // 简单的悬停计时器
+    let hoverTimer = 0;
+    let lastHoverBtn = null;
+
+    // --- 2. 几何计算辅助函数 ---
+    
+    function distance(p1, p2) {
+        return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    }
+
+    // 检测食指是否伸直，其他手指弯曲 (用于检测 UI 点击)
+    function isIndexPointing(lm) {
+        // 简单判断：食指指尖最高(y最小)，且高于其他指尖
+        // 这里用 y 坐标判断垂直方向（注意 MediaPipe y轴向下增大）
+        // 更好的逻辑：食指伸直，中指无名指小指弯曲
+        const indexStraight = lm[8].y < lm[6].y;
+        const middleBent = lm[12].y > lm[10].y;
+        const ringBent = lm[16].y > lm[14].y;
+        const pinkyBent = lm[20].y > lm[18].y;
+        return indexStraight && middleBent && ringBent && pinkyBent;
+    }
+
+    // 检测手掌张开
+    function isPalmOpen(lm) {
+        // 五指全部伸直
+        return lm[8].y < lm[6].y && lm[12].y < lm[10].y && lm[16].y < lm[14].y && lm[20].y < lm[18].y && lm[4].x < lm[3].x; // 拇指大概判断
+    }
+
+    // 检测捏合 (食指+拇指)
+    function isPinch(lm) {
+        return distance(lm[8], lm[4]) < 0.05;
+    }
+
+    // 检测剪刀手 (食指+中指伸直，其他弯曲)
+    function isVictory(lm) {
+        const indexStraight = lm[8].y < lm[6].y;
+        const middleStraight = lm[12].y < lm[10].y;
+        const ringBent = lm[16].y > lm[14].y;
+        const pinkyBent = lm[20].y > lm[18].y;
+        return indexStraight && middleStraight && ringBent && pinkyBent;
+    }
+
+    // --- 3. 核心逻辑循环 ---
+
+    function onResults(results) {
+        if (loadingDiv.style.display !== 'none') loadingDiv.style.display = 'none';
+
+        // 调整画布尺寸
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+        
+        // 1. 绘制视频背景
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        
+        // 2. 处理雪花消散动画
+        if (isDissolving) {
+            updateAndDrawParticles();
+            // 如果粒子很少了，停止消散模式
+            if (particles.length === 0) {
+                isDissolving = false;
+            }
+        } else {
+            // 3. 绘制现有笔迹 (应用缩放)
+            drawStrokes();
+        }
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            // 处理手势逻辑
+            handleGestures(results.multiHandLandmarks);
+
+            // 绘制骨架
+            for (const landmarks of results.multiHandLandmarks) {
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 1});
+                drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+            }
+        }
+
+        // 4. 绘制 UI (如果打开)
+        if (state.isMenuOpen) {
+            drawUI();
+        }
+
+        canvasCtx.restore();
+    }
+
+    function handleGestures(allLandmarks) {
+        const lm = allLandmarks[0]; // 主要使用第一只手
+        const now = Date.now();
+
+        // ------------------ 菜单切换逻辑 (Palm Open) ------------------
+        if (state.menuCooldown > 0) state.menuCooldown--;
+
+        if (isPalmOpen(lm)) {
+            if (state.menuCooldown === 0) {
+                // 切换菜单状态
+                state.isMenuOpen = !state.isMenuOpen;
+                state.menuCooldown = 30; // 设置冷却时间
+                // 如果打开菜单，重置其他模式
+                if(state.isMenuOpen) {
+                    currentStroke = null;
+                }
+            }
+        }
+
+        // ------------------ 菜单交互逻辑 ------------------
+        if (state.isMenuOpen) {
+            // 检测食指位置进行 UI 选择
+            const indexTip = lm[8]; // 归一化坐标 0-1
+            checkUISelection(indexTip);
+            return; // 菜单打开时不进行绘图
+        }
+
+        // ------------------ 雪花消散 (Victory) ------------------
+        if (isVictory(lm) && !isDissolving && strokes.length > 0) {
+            startDissolve();
+            return;
+        }
+
+        // ------------------ 双手缩放 (Two Index Fingers) ------------------
+        if (allLandmarks.length === 2) {
+            // 假设两只手都只伸出了食指
+            const h1 = allLandmarks[0];
+            const h2 = allLandmarks[1];
+            // 简单判断：是不是都是食指伸直模式? 或者是简单的距离检测
+            // 为了体验流畅，只要检测到两只手都在，就计算两手食指尖距离
+            const dist = distance(h1[8], h2[8]);
+            
+            if (state.mode !== 'ZOOMING') {
+                state.mode = 'ZOOMING';
+                state.zoomStartDist = dist;
+                state.baseScale = state.scale;
+            } else {
+                // 计算新的缩放比例
+                const ratio = dist / state.zoomStartDist;
+                // 限制缩放范围
+                let newScale = state.baseScale * ratio;
+                if (newScale < 0.5) newScale = 0.5;
+                if (newScale > 5) newScale = 5;
+                state.scale = newScale;
+            }
+            return; // 缩放时不绘图
+        } else {
+            if (state.mode === 'ZOOMING') state.mode = 'IDLE';
+        }
+
+        // ------------------ 绘图/擦除 (Pinch) ------------------
+        if (isPinch(lm)) {
+            // 坐标转换
+            const x = lm[8].x * canvasElement.width;
+            const y = lm[8].y * canvasElement.height;
+
+            // 逆向缩放坐标，以便存储在原始坐标系中
+            // (x - center) / scale + center
+            const centerX = canvasElement.width / 2;
+            const centerY = canvasElement.height / 2;
+            const rawX = (x - centerX) / state.scale + centerX;
+            const rawY = (y - centerY) / state.scale + centerY;
+
+            if (state.tool === 'PEN') {
+                if (!currentStroke) {
+                    currentStroke = {
+                        color: state.color,
+                        size: state.lineWidth,
+                        points: []
+                    };
+                    strokes.push(currentStroke);
+                }
+                currentStroke.points.push({x: rawX, y: rawY});
+            } else if (state.tool === 'ERASER') {
+                // 橡皮擦逻辑：删除附近的点
+                erasePoints(rawX, rawY);
+            }
+        } else {
+            currentStroke = null;
+        }
+    }
+
+    // --- 4. 功能实现细节 ---
+
+    function drawStrokes() {
+        const centerX = canvasElement.width / 2;
+        const centerY = canvasElement.height / 2;
+
+        canvasCtx.save();
+        // 应用全局缩放：以屏幕中心为锚点
+        canvasCtx.translate(centerX, centerY);
+        canvasCtx.scale(state.scale, state.scale);
+        canvasCtx.translate(-centerX, -centerY);
+
+        canvasCtx.lineCap = 'round';
+        canvasCtx.lineJoin = 'round';
+
+        for (const stroke of strokes) {
+            if (stroke.points.length < 1) continue;
+            
+            canvasCtx.beginPath();
+            canvasCtx.lineWidth = stroke.size;
+            canvasCtx.strokeStyle = stroke.color;
+
+            canvasCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+            for (let i = 1; i < stroke.points.length; i++) {
+                canvasCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+            }
+            canvasCtx.stroke();
+        }
+        canvasCtx.restore();
+    }
+
+    function erasePoints(ex, ey) {
+        const radius = 30 / state.scale; // 橡皮擦半径随缩放调整
+        // 简单的遍历删除 (性能一般但够用)
+        for (let s = strokes.length - 1; s >= 0; s--) {
+            const stroke = strokes[s];
+            stroke.points = stroke.points.filter(p => {
+                const d = Math.hypot(p.x - ex, p.y - ey);
+                return d > radius;
+            });
+            // 如果一条线的点被删光了，移除该线
+            if (stroke.points.length === 0) {
+                strokes.splice(s, 1);
+            }
+        }
+    }
+
+    function drawUI() {
+        const w = canvasElement.width;
+        const h = canvasElement.height;
+        
+        // 半透明背景
+        canvasCtx.fillStyle = 'rgba(50, 50, 50, 0.85)';
+        canvasCtx.roundRect(w * uiConfig.x, h * uiConfig.y, w * uiConfig.width, h * uiConfig.height, 20);
+        canvasCtx.fill();
+        canvasCtx.strokeStyle = 'white';
+        canvasCtx.lineWidth = 2;
+        canvasCtx.stroke();
+
+        // 绘制按钮
+        for (const btn of uiConfig.buttons) {
+            const bx = w * btn.x;
+            const by = h * btn.y;
+            const bw = w * btn.w;
+            const bh = h * btn.h;
+
+            // 高亮选中状态
+            if (lastHoverBtn === btn) {
+                canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                canvasCtx.fillRect(bx - 5, by - 5, bw + 10, bh + 10);
+            }
+
+            // 当前激活的工具/颜色高亮
+            let isActive = false;
+            if (btn.id.includes(state.tool.toLowerCase())) isActive = true; // 笔/橡皮
+            if (btn.color && btn.color === state.color) isActive = true; // 颜色
+            // 粗细检查
+            if (btn.id === 'size_small' && state.lineWidth === 3) isActive = true;
+            if (btn.id === 'size_mid' && state.lineWidth === 8) isActive = true;
+            if (btn.id === 'size_large' && state.lineWidth === 15) isActive = true;
+
+            if (isActive) {
+                canvasCtx.strokeStyle = '#00FF00';
+                canvasCtx.lineWidth = 4;
+                canvasCtx.strokeRect(bx, by, bw, bh);
+            }
+
+            if (btn.type === 'color') {
+                canvasCtx.fillStyle = btn.color;
+                canvasCtx.fillRect(bx, by, bw, bh);
+            } else {
+                canvasCtx.fillStyle = 'rgba(255,255,255,0.1)';
+                canvasCtx.fillRect(bx, by, bw, bh);
+                canvasCtx.fillStyle = 'white';
+                canvasCtx.font = '20px Arial';
+                canvasCtx.textAlign = 'center';
+                canvasCtx.textBaseline = 'middle';
+                canvasCtx.fillText(btn.text, bx + bw/2, by + bh/2);
+            }
+        }
+    }
+
+    function checkUISelection(indexTip) {
+        // indexTip 是归一化坐标 0-1
+        let hovered = null;
+        for (const btn of uiConfig.buttons) {
+            if (indexTip.x >= btn.x && indexTip.x <= btn.x + btn.w &&
+                indexTip.y >= btn.y && indexTip.y <= btn.y + btn.h) {
+                hovered = btn;
+                break;
+            }
+        }
+
+        if (hovered) {
+            if (lastHoverBtn === hovered) {
+                hoverTimer++;
+                // 绘制进度圈
+                const bx = canvasElement.width * hovered.x;
+                const by = canvasElement.height * hovered.y;
+                canvasCtx.beginPath();
+                canvasCtx.arc(bx, by, 10, 0, (hoverTimer / 30) * Math.PI * 2);
+                canvasCtx.strokeStyle = 'cyan';
+                canvasCtx.stroke();
+
+                if (hoverTimer > 20) { // 悬停约 20 帧触发
+                    if (hovered.action) hovered.action();
+                    if (hovered.type === 'color') state.color = hovered.color;
+                    
+                    // 触发反馈动画或声音（这里简单重置）
+                    hoverTimer = 0;
+                    lastHoverBtn = null; // 强制重置防止连续触发
+                }
+            } else {
+                lastHoverBtn = hovered;
+                hoverTimer = 0;
+            }
+        } else {
+            lastHoverBtn = null;
+            hoverTimer = 0;
+        }
+    }
+
+    // --- 5. 雪花粒子系统 ---
+
+    function startDissolve() {
+        isDissolving = true;
+        particles = [];
+        
+        // 将所有笔迹转化为粒子
+        const centerX = canvasElement.width / 2;
+        const centerY = canvasElement.height / 2;
+
+        for (const stroke of strokes) {
+            for (let i = 0; i < stroke.points.length; i+=2) { // 采样，不用每个点都转
+                const p = stroke.points[i];
+                // 应用当前的缩放状态计算屏幕实际位置，作为粒子初始位置
+                const screenX = (p.x - centerX) * state.scale + centerX;
+                const screenY = (p.y - centerY) * state.scale + centerY;
+
+                particles.push({
+                    x: screenX,
+                    y: screenY,
+                    vx: (Math.random() - 0.5) * 2, // 随机横向漂移
+                    vy: Math.random() * 2 + 1,     // 向下掉落速度
+                    color: stroke.color,
+                    size: stroke.size * state.scale,
+                    alpha: 1.0
+                });
+            }
+        }
+        // 清空笔迹
+        strokes = [];
+    }
+
+    function updateAndDrawParticles() {
+        for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.alpha -= 0.015; // 渐隐
+            p.vx += (Math.random() - 0.5) * 0.1; // 随机摆动
+
+            if (p.alpha <= 0 || p.y > canvasElement.height) {
+                particles.splice(i, 1);
+            } else {
+                canvasCtx.globalAlpha = p.alpha;
+                canvasCtx.fillStyle = p.color;
+                canvasCtx.beginPath();
+                canvasCtx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
+                canvasCtx.fill();
+            }
+        }
+        canvasCtx.globalAlpha = 1.0;
+    }
+
+    // --- 6. 启动 MediaPipe Hands ---
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+    
+    camera.start();
+
+</script>
+</body>
+</html>
