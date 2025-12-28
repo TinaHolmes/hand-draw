@@ -324,60 +324,72 @@
     }
 
     function drawUI() {
-        const w = canvasElement.width;
-        const h = canvasElement.height;
+    const w = canvasElement.width;
+    const h = canvasElement.height;
+    
+    // 1. 绘制半透明背景
+    canvasCtx.fillStyle = 'rgba(50, 50, 50, 0.85)';
+    canvasCtx.roundRect(w * uiConfig.x, h * uiConfig.y, w * uiConfig.width, h * uiConfig.height, 20);
+    canvasCtx.fill();
+    canvasCtx.strokeStyle = 'white';
+    canvasCtx.lineWidth = 2;
+    canvasCtx.stroke();
+
+    // 2. 遍历按钮绘制
+    for (const btn of uiConfig.buttons) {
+        const bx = w * btn.x;
+        const by = h * btn.y;
+        const bw = w * btn.w;
+        const bh = h * btn.h;
+
+        // --- 核心修复：针对每个按钮开启独立的坐标变换 ---
+        canvasCtx.save(); 
+        // 将坐标原点移到按钮中心
+        canvasCtx.translate(bx + bw / 2, by + bh / 2);
+        // 水平翻转坐标系，抵消全局的 scaleX(-1)
+        canvasCtx.scale(-1, 1);
         
-        // 半透明背景
-        canvasCtx.fillStyle = 'rgba(50, 50, 50, 0.85)';
-        canvasCtx.roundRect(w * uiConfig.x, h * uiConfig.y, w * uiConfig.width, h * uiConfig.height, 20);
-        canvasCtx.fill();
-        canvasCtx.strokeStyle = 'white';
-        canvasCtx.lineWidth = 2;
-        canvasCtx.stroke();
+        // 现在所有绘制坐标都以按钮中心为 (0,0)
+        const halfW = bw / 2;
+        const halfH = bh / 2;
 
-        // 绘制按钮
-        for (const btn of uiConfig.buttons) {
-            const bx = w * btn.x;
-            const by = h * btn.y;
-            const bw = w * btn.w;
-            const bh = h * btn.h;
-
-            // 高亮选中状态
-            if (lastHoverBtn === btn) {
-                canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-                canvasCtx.fillRect(bx - 5, by - 5, bw + 10, bh + 10);
-            }
-
-            // 当前激活的工具/颜色高亮
-            let isActive = false;
-            if (btn.id.includes(state.tool.toLowerCase())) isActive = true; // 笔/橡皮
-            if (btn.color && btn.color === state.color) isActive = true; // 颜色
-            // 粗细检查
-            if (btn.id === 'size_small' && state.lineWidth === 3) isActive = true;
-            if (btn.id === 'size_mid' && state.lineWidth === 8) isActive = true;
-            if (btn.id === 'size_large' && state.lineWidth === 15) isActive = true;
-
-            if (isActive) {
-                canvasCtx.strokeStyle = '#00FF00';
-                canvasCtx.lineWidth = 4;
-                canvasCtx.strokeRect(bx, by, bw, bh);
-            }
-
-            if (btn.type === 'color') {
-                canvasCtx.fillStyle = btn.color;
-                canvasCtx.fillRect(bx, by, bw, bh);
-            } else {
-                canvasCtx.fillStyle = 'rgba(255,255,255,0.1)';
-                canvasCtx.fillRect(bx, by, bw, bh);
-                canvasCtx.fillStyle = 'white';
-                canvasCtx.font = '20px Arial';
-                canvasCtx.textAlign = 'center';
-                canvasCtx.textBaseline = 'middle';
-                canvasCtx.fillText(btn.text, bx + bw/2, by + bh/2);
-            }
+        // 绘制高亮选中状态
+        if (lastHoverBtn === btn) {
+            canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            canvasCtx.fillRect(-halfW - 5, -halfH - 5, bw + 10, bh + 10);
         }
-    }
 
+        // 当前激活的工具/颜色高亮
+        let isActive = false;
+        if (btn.id.includes(state.tool.toLowerCase())) isActive = true;
+        if (btn.color && btn.color === state.color) isActive = true;
+        if (btn.id === 'size_small' && state.lineWidth === 3) isActive = true;
+        if (btn.id === 'size_mid' && state.lineWidth === 8) isActive = true;
+        if (btn.id === 'size_large' && state.lineWidth === 15) isActive = true;
+
+        if (isActive) {
+            canvasCtx.strokeStyle = '#00FF00';
+            canvasCtx.lineWidth = 4;
+            canvasCtx.strokeRect(-halfW, -halfH, bw, bh);
+        }
+
+        if (btn.type === 'color') {
+            canvasCtx.fillStyle = btn.color;
+            canvasCtx.fillRect(-halfW, -halfH, bw, bh);
+        } else {
+            canvasCtx.fillStyle = 'rgba(255,255,255,0.1)';
+            canvasCtx.fillRect(-halfW, -halfH, bw, bh);
+            canvasCtx.fillStyle = 'white';
+            canvasCtx.font = '20px Arial';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.textBaseline = 'middle';
+            // 在 (0,0) 位置（即按钮中心）绘制文字
+            canvasCtx.fillText(btn.text, 0, 0);
+        }
+        
+        canvasCtx.restore(); // 恢复状态，处理下一个按钮
+    }
+}
     function checkUISelection(indexTip) {
         // indexTip 是归一化坐标 0-1
         let hovered = null;
@@ -498,4 +510,5 @@
 </script>
 </body>
 </html>
+
 
