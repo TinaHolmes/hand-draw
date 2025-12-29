@@ -247,7 +247,7 @@
         // ------------------ 绘图/擦除 (Pinch) ------------------
         if (isPinch(lm)) {
             // 坐标转换
-            const x = (1 - lm[8].x) * canvasElement.width;
+            const x = lm[8].x * canvasElement.width;
             const y = lm[8].y * canvasElement.height;
 
             // 逆向缩放坐标，以便存储在原始坐标系中
@@ -324,40 +324,60 @@
     }
 
     function drawUI() {
-    const w = canvasElement.width;
-    const h = canvasElement.height;
-    
-    // 1. 绘制半透明背景
-    canvasCtx.fillStyle = 'rgba(50, 50, 50, 0.85)';
-    canvasCtx.roundRect(w * uiConfig.x, h * uiConfig.y, w * uiConfig.width, h * uiConfig.height, 20);
-    canvasCtx.fill();
-    canvasCtx.strokeStyle = 'white';
-    canvasCtx.lineWidth = 2;
-    canvasCtx.stroke();
+        const w = canvasElement.width;
+        const h = canvasElement.height;
+        
+        // 半透明背景
+        canvasCtx.fillStyle = 'rgba(50, 50, 50, 0.85)';
+        canvasCtx.roundRect(w * uiConfig.x, h * uiConfig.y, w * uiConfig.width, h * uiConfig.height, 20);
+        canvasCtx.fill();
+        canvasCtx.strokeStyle = 'white';
+        canvasCtx.lineWidth = 2;
+        canvasCtx.stroke();
 
-    // 2. 遍历按钮绘制
-    for (const btn of uiConfig.buttons) {
-        const bx = w * btn.x;
-        const by = h * btn.y;
-        const bw = w * btn.w;
-        const bh = h * btn.h;
+        // 绘制按钮
+        for (const btn of uiConfig.buttons) {
+            const bx = w * btn.x;
+            const by = h * btn.y;
+            const bw = w * btn.w;
+            const bh = h * btn.h;
 
-        // --- 核心修复：针对每个按钮开启独立的坐标变换 ---
-        canvasCtx.save(); // 保存当前状态
+            // 高亮选中状态
+            if (lastHoverBtn === btn) {
+                canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                canvasCtx.fillRect(bx - 5, by - 5, bw + 10, bh + 10);
+            }
 
-// 关键步：将坐标系平移到文字中心，并局部反转 X 轴
-canvasCtx.translate(bx + bw / 2, by + bh / 2);
-canvasCtx.scale(-1, 1); // 局部反转文字，抵消画布的整体镜像
+            // 当前激活的工具/颜色高亮
+            let isActive = false;
+            if (btn.id.includes(state.tool.toLowerCase())) isActive = true; // 笔/橡皮
+            if (btn.color && btn.color === state.color) isActive = true; // 颜色
+            // 粗细检查
+            if (btn.id === 'size_small' && state.lineWidth === 3) isActive = true;
+            if (btn.id === 'size_mid' && state.lineWidth === 8) isActive = true;
+            if (btn.id === 'size_large' && state.lineWidth === 15) isActive = true;
 
-canvasCtx.fillStyle = 'white';
-canvasCtx.font = '20px Arial';
-canvasCtx.textAlign = 'center';
-canvasCtx.textBaseline = 'middle';
+            if (isActive) {
+                canvasCtx.strokeStyle = '#00FF00';
+                canvasCtx.lineWidth = 4;
+                canvasCtx.strokeRect(bx, by, bw, bh);
+            }
 
-// 注意：此时坐标已经平移，所以写字位置是 (0, 0)
-canvasCtx.fillText(btn.text, 0, 0); 
+            if (btn.type === 'color') {
+                canvasCtx.fillStyle = btn.color;
+                canvasCtx.fillRect(bx, by, bw, bh);
+            } else {
+                canvasCtx.fillStyle = 'rgba(255,255,255,0.1)';
+                canvasCtx.fillRect(bx, by, bw, bh);
+                canvasCtx.fillStyle = 'white';
+                canvasCtx.font = '20px Arial';
+                canvasCtx.textAlign = 'center';
+                canvasCtx.textBaseline = 'middle';
+                canvasCtx.fillText(btn.text, bx + bw/2, by + bh/2);
+            }
+        }
+    }
 
-canvasCtx.restore(); // 恢复状态，不影响后续绘制
     function checkUISelection(indexTip) {
         // indexTip 是归一化坐标 0-1
         let hovered = null;
@@ -478,8 +498,3 @@ canvasCtx.restore(); // 恢复状态，不影响后续绘制
 </script>
 </body>
 </html>
-
-
-
-
-
